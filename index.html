@@ -1,0 +1,375 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>虹吸原理實驗模擬器 (修正版)</title>
+    <style>
+        :root {
+            --primary-color: #2c3e50;
+            --water-color: rgba(52, 152, 219, 0.7);
+            --water-solid: #2980b9;
+            --tube-color: rgba(189, 195, 199, 0.6);
+            --tube-border: #7f8c8d;
+            --bg-color: #ecf0f1;
+            --tank-color: #34495e;
+            --accent-color: #e74c3c;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: var(--bg-color);
+            margin: 0;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            user-select: none;
+        }
+
+        .header {
+            text-align: center;
+            margin-bottom: 20px;
+        }
+
+        h1 {
+            color: var(--primary-color);
+            margin: 0 0 10px 0;
+        }
+
+        .description {
+            color: #555;
+            max-width: 700px;
+            text-align: center;
+            line-height: 1.5;
+        }
+
+        .simulator-container {
+            background: white;
+            padding: 20px;
+            border-radius: 12px;
+            box-shadow: 0 10px 20px rgba(0,0,0,0.1);
+            position: relative;
+        }
+
+        canvas {
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            background: #fafafa;
+            cursor: grab;
+            display: block;
+        }
+
+        canvas:active {
+            cursor: grabbing;
+        }
+
+        .controls {
+            margin-top: 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 8px;
+            border: 1px solid #eee;
+        }
+
+        button {
+            background-color: var(--primary-color);
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            font-size: 16px;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: background 0.3s;
+        }
+
+        button:hover {
+            background-color: #1a252f;
+        }
+
+        .status-panel {
+            font-size: 16px;
+            font-weight: bold;
+            display: flex;
+            gap: 15px;
+        }
+
+        .status-indicator {
+            padding: 5px 12px;
+            border-radius: 20px;
+            background: #2ecc71;
+            color: white;
+        }
+
+        .status-indicator.broken {
+            background: var(--accent-color);
+        }
+
+        .labels-overlay {
+            position: absolute;
+            pointer-events: none;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="header">
+        <h1>💧 虹吸原理實驗模擬器</h1>
+        <div class="description">
+            此模擬器根據您的手繪圖設計。拖曳右側的「出水口」上下移動，觀察水位的變化。
+            <br><b>物理原理：</b>當出水口高度低於水槽水面，且管內充滿水時，水會因重力與壓力差持續流出；若出水口高於水面，則無法出水。若水位低於吸水管口，空氣進入管內，虹吸現象也會中斷。
+        </div>
+    </div>
+
+    <div class="simulator-container">
+        <canvas id="simCanvas" width="700" height="500"></canvas>
+        <div class="controls">
+            <button id="resetBtn">🔄 重新加水並抽氣 (Reset)</button>
+            <div class="status-panel">
+                <div id="flowStatus">流速: 0.00</div>
+                <div id="siphonStatus" class="status-indicator">✅ 虹吸作用中</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('simCanvas');
+        const ctx = canvas.getContext('2d');
+        const resetBtn = document.getElementById('resetBtn');
+        const flowStatus = document.getElementById('flowStatus');
+        const siphonStatus = document.getElementById('siphonStatus');
+
+        // Physics & State Variables
+        const tank = { x: 50, y: 150, width: 220, height: 250 };
+        const tankBottom = tank.y + tank.height;
+        const initialWaterY = 180;
+        let waterY = initialWaterY;
+        
+        // 吸水管口位置 (離水槽底 20px)
+        const tubeInlet = { x: 160, y: tankBottom - 20 };
+        const tubePeak = { x: 160, y: 60 };
+        const tubeCurveCenter = { x: 260, y: 60 };
+        const outletX = 500;
+        let outletY = 350;
+
+        let isDragging = false;
+        let isPrimed = true;
+        let particles = [];
+        let flowRate = 0;
+
+        // Mouse Event Handling
+        function getMousePos(evt) {
+            const rect = canvas.getBoundingClientRect();
+            return {
+                x: evt.clientX - rect.left,
+                y: evt.clientY - rect.top
+            };
+        }
+
+        canvas.addEventListener('mousedown', (e) => {
+            const pos = getMousePos(e);
+            if (Math.abs(pos.x - outletX) < 40 && Math.abs(pos.y - outletY) < 40) {
+                isDragging = true;
+            }
+        });
+
+        canvas.addEventListener('mousemove', (e) => {
+            if (isDragging) {
+                const pos = getMousePos(e);
+                outletY = pos.y;
+                if (outletY < 50) outletY = 50;
+                if (outletY > 480) outletY = 480;
+            }
+        });
+
+        canvas.addEventListener('mouseup', () => { isDragging = false; });
+        canvas.addEventListener('mouseleave', () => { isDragging = false; });
+
+        canvas.addEventListener('touchstart', (e) => {
+            const touch = e.touches[0];
+            const mouseEvent = new MouseEvent('mousedown', { clientX: touch.clientX, clientY: touch.clientY });
+            canvas.dispatchEvent(mouseEvent);
+        }, { passive: false });
+
+        canvas.addEventListener('touchmove', (e) => {
+            if (isDragging) e.preventDefault();
+            const touch = e.touches[0];
+            const mouseEvent = new MouseEvent('mousemove', { clientX: touch.clientX, clientY: touch.clientY });
+            canvas.dispatchEvent(mouseEvent);
+        }, { passive: false });
+
+        canvas.addEventListener('touchend', () => {
+            const mouseEvent = new MouseEvent('mouseup', {});
+            canvas.dispatchEvent(mouseEvent);
+        });
+
+        resetBtn.addEventListener('click', () => {
+            waterY = initialWaterY;
+            isPrimed = true;
+            outletY = 350;
+            particles = [];
+            siphonStatus.textContent = '✅ 虹吸作用中';
+            siphonStatus.className = 'status-indicator';
+        });
+
+        // Animation Loop
+        function update() {
+            if (isPrimed) {
+                // 檢查1：如果水面低於(或等於)吸水管口，空氣進入，虹吸中斷
+                if (waterY >= tubeInlet.y) {
+                    isPrimed = false;
+                    flowRate = 0;
+                    waterY = tubeInlet.y; // 水位停在管口處
+                    siphonStatus.textContent = '❌ 虹吸中斷 (水位低於管口)';
+                    siphonStatus.className = 'status-indicator broken';
+                }
+                // 檢查2：如果出水口低於水面，則正常吸水
+                else if (outletY > waterY) {
+                    let headDifference = outletY - waterY;
+                    flowRate = Math.sqrt(headDifference) * 0.04;
+                    waterY += flowRate * 0.15; 
+                    
+                    // Generate water particles at outlet
+                    if (Math.random() < 0.6 + flowRate) {
+                        particles.push({
+                            x: outletX + (Math.random() * 10 - 5),
+                            y: outletY,
+                            vx: (Math.random() * 2 - 1) * 0.5,
+                            vy: Math.random() * 2 + flowRate * 3,
+                            life: 1.0
+                        });
+                    }
+                } 
+                // 檢查3：如果出水口高於水面，虹吸中斷
+                else if (outletY <= waterY) {
+                    isPrimed = false;
+                    flowRate = 0;
+                    siphonStatus.textContent = '❌ 虹吸中斷 (出水口過高)';
+                    siphonStatus.className = 'status-indicator broken';
+                }
+            } else {
+                flowRate = 0;
+            }
+
+            // Update particles
+            for (let i = particles.length - 1; i >= 0; i--) {
+                let p = particles[i];
+                p.x += p.vx;
+                p.y += p.vy;
+                p.vy += 0.2; // Gravity
+                p.life -= 0.02;
+                if (p.life <= 0 || p.y > 550) {
+                    particles.splice(i, 1);
+                }
+            }
+
+            flowStatus.textContent = `流速: ${flowRate.toFixed(2)}`;
+        }
+
+        function drawPath(isInner) {
+            ctx.beginPath();
+            ctx.moveTo(tubeInlet.x, tubeInlet.y);
+            ctx.lineTo(tubePeak.x, tubePeak.y);
+            ctx.quadraticCurveTo(tubePeak.x, tubePeak.y - 40, tubeCurveCenter.x, tubePeak.y - 40);
+            ctx.bezierCurveTo(380, tubePeak.y - 40, outletX - 20, outletY - 80, outletX, outletY);
+            
+            if (!isInner) {
+                ctx.lineWidth = 24;
+                ctx.strokeStyle = '#7f8c8d';
+                ctx.stroke();
+            } else {
+                ctx.lineWidth = 16;
+                // If primed, tube is filled with water color, else empty white/grey
+                ctx.strokeStyle = (isPrimed && waterY < tubeInlet.y) ? '#2980b9' : '#ecf0f1';
+                ctx.stroke();
+            }
+        }
+
+        function draw() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            // Draw Water in Tank
+            ctx.fillStyle = 'rgba(52, 152, 219, 0.4)';
+            ctx.fillRect(tank.x, waterY, tank.width, tankBottom - waterY);
+            
+            // Draw Tank Outline
+            ctx.beginPath();
+            ctx.moveTo(tank.x, tank.y);
+            ctx.lineTo(tank.x, tankBottom);
+            ctx.lineTo(tank.x + tank.width, tankBottom);
+            ctx.lineTo(tank.x + tank.width, tank.y);
+            ctx.lineWidth = 4;
+            ctx.strokeStyle = '#2c3e50';
+            ctx.stroke();
+
+            // Draw Tube
+            drawPath(false);
+            drawPath(true);
+
+            // Draw Outlet Handle
+            ctx.beginPath();
+            ctx.arc(outletX, outletY, 15, 0, Math.PI * 2);
+            ctx.fillStyle = isDragging ? '#e74c3c' : '#e67e22';
+            ctx.fill();
+            ctx.lineWidth = 3;
+            ctx.strokeStyle = '#333';
+            ctx.stroke();
+            
+            ctx.fillStyle = '#fff';
+            ctx.font = '12px Arial';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText('↕', outletX, outletY);
+
+            // Draw Water Particles
+            ctx.fillStyle = '#3498db';
+            particles.forEach(p => {
+                ctx.beginPath();
+                ctx.arc(p.x, p.y, 4 * p.life, 0, Math.PI * 2);
+                ctx.fill();
+            });
+
+            // Text Annotations
+            ctx.fillStyle = '#2c3e50';
+            ctx.font = '18px Microsoft JhengHei, sans-serif';
+            ctx.textAlign = 'left';
+            
+            ctx.fillText('↓ 水面會下降', tank.x - 40, waterY + 30);
+            
+            ctx.textAlign = 'right';
+            ctx.fillText('可自由移動 ↙', outletX - 25, outletY - 20);
+
+            ctx.textAlign = 'center';
+            ctx.fillStyle = '#e74c3c';
+            ctx.font = 'bold 16px Microsoft JhengHei';
+            ctx.fillText('出水口高於水面會流不出水', outletX, canvas.height - 30);
+            
+            // Dashed Line for current water level
+            ctx.beginPath();
+            ctx.moveTo(tank.x + tank.width, waterY);
+            ctx.lineTo(canvas.width - 20, waterY);
+            ctx.lineWidth = 2;
+            ctx.strokeStyle = 'rgba(231, 76, 60, 0.5)';
+            ctx.setLineDash([5, 5]);
+            ctx.stroke();
+            ctx.setLineDash([]);
+            
+            ctx.fillStyle = 'rgba(231, 76, 60, 0.8)';
+            ctx.textAlign = 'right';
+            ctx.font = '14px Microsoft JhengHei';
+            ctx.fillText('目前水面高度', canvas.width - 20, waterY - 8);
+        }
+
+        function loop() {
+            update();
+            draw();
+            requestAnimationFrame(loop);
+        }
+
+        loop();
+    </script>
+</body>
+</html>
